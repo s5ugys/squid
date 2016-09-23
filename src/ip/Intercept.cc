@@ -297,6 +297,77 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
 #if PF_TRANSPARENT  /* --enable-pf-transparent */
 
 #if !USE_NAT_DEVPF
+
+#if _SQUID_APPLE_ /* _SQUID_APPLE_ */
+
+    const char *cmdFormat = "/sbin/pfctl -s state | "
+        "/usr/bin/awk '$3 == \"%s\" && $7 == \"%s\" && $8 == \"%s\" "
+        "{print $5}'";
+    const char *established = "ESTABLISHED:ESTABLISHED";
+
+    char saddr[MAX_IPSTRLEN + 6];
+    char daddr[MAX_IPSTRLEN + 6];
+
+    newConn->remote.toUrl(saddr, sizeof(saddr));
+    newConn->local.toUrl(daddr, sizeof(daddr));
+
+    int cmdLen = strlen(cmdFormat) + strlen(saddr) + strlen(daddr)
+        + strlen(established);
+    char *cmd = (char *)malloc(sizeof(char) * cmdLen);
+    snprintf(cmd, cmdLen, cmdFormat, daddr, saddr, established);
+
+    int pipefd[2];
+    pipe(pipefd);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipefd[0]);
+        close(STDIN_FILENO);
+        close(STDERR_FILENO);
+        dup2(pipefd[1], STDOUT_FILENO);
+        enter_suid();
+        execl("/bin/sh", "/bin/sh", "-c", cmd, NULL);
+        leave_suid();
+    }
+    else if (pid == -1) {
+        debugs(89, DBG_IMPORTANT, HERE << "PFCTL fork failed: " << xstrerror());
+        free(cmd);
+        return false;
+    }
+    free(cmd);
+    close(pipefd[1]);
+
+    char rdaddr[MAX_IPSTRLEN + 6];
+    FILE *fp = fdopen(pipefd[0], "r");
+    while (!feof(fp)) {
+        if (fgets(rdaddr, sizeof(rdaddr), fp) != NULL) {
+            char *portPtr = strchr(rdaddr, '\n');
+            if (portPtr) *portPtr = '\0';
+            portPtr = strrchr(rdaddr, ':');
+            if (portPtr) {
+                *portPtr = '\0';
+                portPtr += 1;
+            }
+            else {
+                debugs(89, DBG_IMPORTANT, HERE << "PFCTL failed to find state");
+                return false;
+            }
+            newConn->local = rdaddr;
+            newConn->local.port(atol(portPtr));
+            debugs(89, 5, HERE << "address NAT: " << newConn);
+
+            close(pipefd[0]);
+            return true;
+        }
+        if (errno == EINTR || errno == EAGAIN) {
+            continue;
+        }
+    }
+
+    close(pipefd[0]);
+    return false;
+
+#else /* _SQUID_APPLE_ */
+
     /* On recent PF versions the getsockname() call performed already provided
      * the required TCP packet details.
      * There is no way to identify whether they came from NAT or not.
@@ -306,6 +377,7 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     debugs(89, 5, HERE << "address NAT divert-to: " << newConn);
     return true;
 
+#endif /* _SQUID_APPLE_ */
 #else /* USE_NAT_DEVPF / --with-nat-devpf */
 
     struct pfioc_natlook nl;
