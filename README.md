@@ -15,3 +15,11 @@ Current options to compile on MacOSX, including the conditional compilation for 
 CPPFLAGS="-D_SQUID_APPLE -Wno-error=deprecated-declarations" \
 LDFLAGS=-lresolv
 ```
+
+
+-----------
+
+```
+DISTCHECK_CONFIGURE_FLAGS='CPPFLAGS="-D_SQUID_APPLE -Wno-error=deprecated-declarations" LDFLAGS=-lresolv'; \
+   export DISTCHECK_CONFIGURE_FLAGS
+```
