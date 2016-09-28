@@ -308,19 +308,21 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
         "{print $5}'";
     const char *established = "ESTABLISHED:ESTABLISHED";
 
-    char saddr[MAX_IPSTRLEN + 6];
-    char daddr[MAX_IPSTRLEN + 6];
+    char saddr[MAX_IPSTRLEN + 9];
+    char daddr[MAX_IPSTRLEN + 9];
 
     newConn->remote.toUrl(saddr, sizeof(saddr));
     newConn->local.toUrl(daddr, sizeof(daddr));
 
-    int cmdLen = strlen(cmdFormat) + strlen(saddr) + strlen(daddr)
-        + strlen(established);
-    char *cmd = (char *)malloc(sizeof(char) * cmdLen);
-    snprintf(cmd, cmdLen, cmdFormat, daddr, saddr, established);
+    SBuf cmd;
+    cmd.appendf(cmdFormat, daddr, saddr, established);
 
     int pipefd[2];
-    pipe(pipefd);
+    if (pipe(pipefd) == -1) {
+        int xerrno = errno;
+        debugs(89, DBG_IMPORTANT, HERE << "PFCTL pipe creation failed: " << xstrerr(xerrno));
+        return false;
+    }
     pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
@@ -328,24 +330,34 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
         close(STDERR_FILENO);
         dup2(pipefd[1], STDOUT_FILENO);
         enter_suid();
-        execl("/bin/sh", "/bin/sh", "-c", cmd, NULL);
+        execl("/bin/sh", "/bin/sh", "-c", cmd.rawContent(), NULL);
         leave_suid();
+        exit(EXIT_FAILURE);
     }
     else if (pid == -1) {
         int xerrno = errno;
         debugs(89, DBG_IMPORTANT, HERE << "PFCTL fork failed: " << xstrerr(xerrno));
-        free(cmd);
         return false;
     }
-    free(cmd);
     close(pipefd[1]);
 
-    char rdaddr[MAX_IPSTRLEN + 6];
     FILE *fp = fdopen(pipefd[0], "r");
+    if (fp == NULL) {
+        int xerrno = errno;
+        debugs(89, DBG_IMPORTANT, HERE << "Reading from PFCTL failed: " << xstrerr(xerrno));
+        return false;
+    }
     while (!feof(fp)) {
+        char rdaddr[MAX_IPSTRLEN + 9];
         if (fgets(rdaddr, sizeof(rdaddr), fp) != NULL) {
             char *portPtr = strchr(rdaddr, '\n');
-            if (portPtr) *portPtr = '\0';
+            if (portPtr) {
+               *portPtr = '\0';
+            }
+            else {
+                debugs(89, DBG_IMPORTANT, HERE << "PFCTL state result truncated: " << rdaddr);
+                continue;
+            }
             portPtr = strrchr(rdaddr, ':');
             if (portPtr) {
                 *portPtr = '\0';
@@ -353,21 +365,19 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
             }
             else {
                 debugs(89, DBG_IMPORTANT, HERE << "PFCTL failed to find state");
+                fclose(fp);
                 return false;
             }
             newConn->local = rdaddr;
             newConn->local.port(atol(portPtr));
             debugs(89, 5, HERE << "address NAT: " << newConn);
 
-            close(pipefd[0]);
+            fclose(fp);
             return true;
-        }
-        if (errno == EINTR || errno == EAGAIN) {
-            continue;
         }
     }
 
-    close(pipefd[0]);
+    fclose(fp);
     return false;
 
 #else /* _SQUID_APPLE_ */
