@@ -353,9 +353,8 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     char buf[4096];
     int n;
     while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-        state.append(buf);
+        state.append(buf, n);
     }
-    close(pipefd[0]);
 
     if (n == -1) {
         int xerrno = errno;
@@ -363,36 +362,32 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
         return false;
     }
 
+    close(pipefd[0]);
     Parser::Tokenizer tk(state);
-    CharacterSet bracket("bracket", "[]");
-    CharacterSet colon("colon", ":");
-    CharacterSet lf("lf", "\n");
-    CharacterSet ws("ws", " \t\r\n");
 
     while (!tk.atEnd()) {
-        SBuf host;
-        SBuf port;
 
-        if (tk.token(host, bracket)) {
-            if (tk.token(port, bracket)) {
+        static const CharacterSet bracket("bracket", "[]");
+        static const CharacterSet colon("colon", ":");
+        static const CharacterSet lf("lf", "\n");
+        static const CharacterSet ws("ws", " \t\r\n");
+
+        SBuf host;
+        int64_t port;
+
+        if (tk.token(host, bracket) || tk.token(host, colon)) {
+            if (tk.int64(port)) {
                 newConn->local = host.c_str();
-                newConn->local.port(atol(port.c_str()));
+                newConn->local.port(port);
                 debugs(89, 5, HERE << "address NAT: " << newConn);
                 return true;
             }
         }
-        else if (tk.token(host, colon)) {
-            if (tk.token(port, ws)) {
-                newConn->local = host.c_str();
-                newConn->local.port(atol(port.c_str()));
-                debugs(89, 5, HERE << "address NAT: " << newConn);
-                return true;
-            }
-        }
-        // Move to EOL and try again from the next line
-        tk.token(host, lf);
+
+        tk.skip('\n');
 
     }
+
     return false;
 
 #else /* _SQUID_APPLE_ */
