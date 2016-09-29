@@ -16,6 +16,7 @@
 #include "fde.h"
 #include "ip/Intercept.h"
 #include "src/tools.h"
+#include "parser/Tokenizer.h"
 
 #include <cerrno>
 
@@ -303,10 +304,13 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
 
 #if _SQUID_APPLE_ /* _SQUID_APPLE_ */
 
-    const char *cmdFormat = "/sbin/pfctl -s state | "
-        "/usr/bin/awk '$3 == \"%s\" && $7 == \"%s\" && $8 == \"%s\" "
-        "{print $5}'";
-    const char *established = "ESTABLISHED:ESTABLISHED";
+    static bool perfWarning = false;
+    if (!perfWarning) {
+        debugs(89, DBG_CRITICAL, 
+            HERE << "WARNING: Transparent Proxy on Apple OSX will impact performance. "
+                 << "Use only for development.");
+        perfWarning = true;
+    }
 
     char saddr[MAX_IPSTRLEN + 9];
     char daddr[MAX_IPSTRLEN + 9];
@@ -314,8 +318,12 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     newConn->remote.toUrl(saddr, sizeof(saddr));
     newConn->local.toUrl(daddr, sizeof(daddr));
 
-    SBuf cmd;
-    cmd.appendf(cmdFormat, daddr, saddr, established);
+    SBuf cmd("/sbin/pfctl -s state | /usr/bin/awk '$3 == \"");
+    cmd.append(daddr);
+    cmd.append("\" && $7 == \"");
+    cmd.append(saddr);
+    cmd.append("\" && $8 == \"");
+    cmd.append("ESTABLISHED:ESTABLISHED\" {print $5}'");
 
     int pipefd[2];
     if (pipe(pipefd) == -1) {
@@ -341,43 +349,50 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     }
     close(pipefd[1]);
 
-    FILE *fp = fdopen(pipefd[0], "r");
-    if (fp == NULL) {
+    SBuf state;
+    char buf[4096];
+    int n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        state.append(buf);
+    }
+    close(pipefd[0]);
+
+    if (n == -1) {
         int xerrno = errno;
         debugs(89, DBG_IMPORTANT, HERE << "Reading from PFCTL failed: " << xstrerr(xerrno));
         return false;
     }
-    while (!feof(fp)) {
-        char rdaddr[MAX_IPSTRLEN + 9];
-        if (fgets(rdaddr, sizeof(rdaddr), fp) != NULL) {
-            char *portPtr = strchr(rdaddr, '\n');
-            if (portPtr) {
-               *portPtr = '\0';
-            }
-            else {
-                debugs(89, DBG_IMPORTANT, HERE << "PFCTL state result truncated: " << rdaddr);
-                continue;
-            }
-            portPtr = strrchr(rdaddr, ':');
-            if (portPtr) {
-                *portPtr = '\0';
-                portPtr += 1;
-            }
-            else {
-                debugs(89, DBG_IMPORTANT, HERE << "PFCTL failed to find state");
-                fclose(fp);
-                return false;
-            }
-            newConn->local = rdaddr;
-            newConn->local.port(atol(portPtr));
-            debugs(89, 5, HERE << "address NAT: " << newConn);
 
-            fclose(fp);
-            return true;
+    Parser::Tokenizer tk(state);
+    CharacterSet bracket("bracket", "[]");
+    CharacterSet colon("colon", ":");
+    CharacterSet lf("lf", "\n");
+    CharacterSet ws("ws", " \t\r\n");
+
+    while (!tk.atEnd()) {
+        SBuf host;
+        SBuf port;
+
+        if (tk.token(host, bracket)) {
+            if (tk.token(port, bracket)) {
+                newConn->local = host.c_str();
+                newConn->local.port(atol(port.c_str()));
+                debugs(89, 5, HERE << "address NAT: " << newConn);
+                return true;
+            }
         }
-    }
+        else if (tk.token(host, colon)) {
+            if (tk.token(port, ws)) {
+                newConn->local = host.c_str();
+                newConn->local.port(atol(port.c_str()));
+                debugs(89, 5, HERE << "address NAT: " << newConn);
+                return true;
+            }
+        }
+        // Move to EOL and try again from the next line
+        tk.token(host, lf);
 
-    fclose(fp);
+    }
     return false;
 
 #else /* _SQUID_APPLE_ */
