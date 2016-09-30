@@ -359,33 +359,25 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     if (n == -1) {
         int xerrno = errno;
         debugs(89, DBG_IMPORTANT, HERE << "Reading from PFCTL failed: " << xstrerr(xerrno));
+        close(pipefd[0]);
         return false;
     }
 
     close(pipefd[0]);
+
+    static const CharacterSet bracket("bracket", "[]");
+    static const CharacterSet colon("colon", ":");
+
     Parser::Tokenizer tk(state);
-
-    while (!tk.atEnd()) {
-
-        static const CharacterSet bracket("bracket", "[]");
-        static const CharacterSet colon("colon", ":");
-        static const CharacterSet lf("lf", "\n");
-        static const CharacterSet ws("ws", " \t\r\n");
-
-        SBuf host;
-        int64_t port;
-
-        if (tk.token(host, bracket) || tk.token(host, colon)) {
-            if (tk.int64(port)) {
-                newConn->local = host.c_str();
-                newConn->local.port(port);
-                debugs(89, 5, HERE << "address NAT: " << newConn);
-                return true;
-            }
+    SBuf host;
+    if (tk.token(host, bracket) || tk.token(host, colon)) {
+        int64_t port = 0;
+        if (tk.int64(port)) {
+            newConn->local = host.c_str();
+            newConn->local.port(port);
+            debugs(89, 5, HERE << "address NAT: " << newConn);
+            return true;
         }
-
-        tk.skip('\n');
-
     }
 
     return false;
