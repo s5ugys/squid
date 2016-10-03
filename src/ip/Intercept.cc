@@ -307,8 +307,8 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     static bool perfWarning = false;
     if (!perfWarning) {
         debugs(89, DBG_CRITICAL, 
-            HERE << "WARNING: Transparent Proxy on Apple OSX will impact performance. "
-                 << "Use only for development.");
+            "WARNING: Transparent Proxy on Apple OSX will impact performance. "
+            << "Use only for development.");
         perfWarning = true;
     }
 
@@ -322,16 +322,15 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     cmd.append(daddr);
     cmd.append("\" && $7 == \"");
     cmd.append(saddr);
-    cmd.append("\" && $8 == \"");
-    cmd.append("ESTABLISHED:ESTABLISHED\" {print $5}'");
+    cmd.append("\" && $8 == \"ESTABLISHED:ESTABLISHED\" {print $5}'");
 
     int pipefd[2];
     if (pipe(pipefd) == -1) {
-        int xerrno = errno;
-        debugs(89, DBG_IMPORTANT, HERE << "PFCTL pipe creation failed: " << xstrerr(xerrno));
+        const int xerrno = errno;
+        debugs(89, DBG_IMPORTANT, "PFCTL pipe creation failed: " << xstrerr(xerrno));
         return false;
     }
-    pid_t pid = fork();
+    const pid_t pid = fork();
     if (pid == 0) {
         close(pipefd[0]);
         close(STDIN_FILENO);
@@ -344,7 +343,7 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
     }
     else if (pid == -1) {
         int xerrno = errno;
-        debugs(89, DBG_IMPORTANT, HERE << "PFCTL fork failed: " << xstrerr(xerrno));
+        debugs(89, DBG_IMPORTANT, "PFCTL fork failed: " << xstrerr(xerrno));
         return false;
     }
     close(pipefd[1]);
@@ -358,7 +357,7 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
 
     if (n == -1) {
         int xerrno = errno;
-        debugs(89, DBG_IMPORTANT, HERE << "Reading from PFCTL failed: " << xstrerr(xerrno));
+        debugs(89, DBG_IMPORTANT, "Reading from PFCTL failed: " << xstrerr(xerrno));
         close(pipefd[0]);
         return false;
     }
@@ -375,11 +374,12 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
         if (tk.int64(port)) {
             newConn->local = host.c_str();
             newConn->local.port(port);
-            debugs(89, 5, HERE << "address NAT: " << newConn);
+            debugs(89, 5, "address NAT: " << newConn);
             return true;
         }
     }
-
+    debugs(89, 3, "no address in" << Raw("PFCTL output", state.rawContent(), 
+        state.length()));
     return false;
 
 #else /* _SQUID_APPLE_ */
