@@ -337,9 +337,9 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
         close(STDERR_FILENO);
         dup2(pipefd[1], STDOUT_FILENO);
         enter_suid();
-        execl("/bin/sh", "/bin/sh", "-c", cmd.rawContent(), NULL);
+        const int rc = execl("/bin/sh", "/bin/sh", "-c", cmd.rawContent(), NULL);
         leave_suid();
-        exit(EXIT_FAILURE);
+        exit(rc);
     }
     else if (pid == -1) {
         int xerrno = errno;
@@ -378,8 +378,13 @@ Ip::Intercept::PfInterception(const Comm::ConnectionPointer &newConn, int silent
             return true;
         }
     }
+
     debugs(89, 3, "no address in" << Raw("PFCTL output", state.rawContent(), 
         state.length()));
+    int status;
+    if (waitpid(pid, &status, WNOHANG) > 0 && WIFEXITED(status)) {
+        debugs(89, 3, "PFCTL exec failed: " << xstrerr(WEXITSTATUS(status)));
+    }
     return false;
 
 #else /* _SQUID_APPLE_ */
